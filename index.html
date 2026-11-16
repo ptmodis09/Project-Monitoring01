@@ -123,6 +123,23 @@ button,select,input{font:inherit;color:inherit}
 .log .it time{font-family:var(--font-mono);font-size:12px;color:var(--ink-3)}
 .log .empty{color:var(--ink-3);padding:8px 0}
 
+/* History */
+.logbar{display:grid;grid-template-columns:minmax(150px,220px) minmax(0,1fr);gap:10px}
+.hist{display:flex;flex-direction:column;gap:14px;max-height:560px;overflow:auto;padding-right:4px}
+.hday{display:flex;flex-direction:column;gap:6px}
+.hday h3{position:sticky;top:0;background:var(--surface);font-family:var(--font-display);font-size:12.5px;letter-spacing:.12em;color:var(--gold);padding:4px 0;border-bottom:1px solid var(--line);z-index:1}
+.hev{display:grid;grid-template-columns:52px 118px minmax(0,1fr);gap:12px;align-items:start;padding:9px 12px;border-radius:9px;background:var(--surface-2);border-left:3px solid var(--k,var(--gold));font-size:13px}
+.hev time{font-family:var(--font-mono);font-size:12px;color:var(--ink-3);padding-top:2px}
+.hev .kd{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--k,var(--gold));padding-top:2px}
+.hev .bd{min-width:0;color:var(--ink-2)}
+.hev .bd .pid{font-family:var(--font-mono);font-size:12px;color:var(--ink);word-break:break-all}
+.hev .bd .nm{display:block;color:var(--ink-3);font-size:12px;margin-top:1px}
+.hev .bd .chg{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:4px}
+.hev .bd .chg span b{color:var(--ink);font-weight:600}
+.hev .bd s{color:var(--ink-3)}
+.hempty{color:var(--ink-3);padding:10px 0}
+@media (max-width:620px){.logbar{grid-template-columns:1fr}.hev{grid-template-columns:48px minmax(0,1fr)}.hev .kd{grid-column:2}.hev .bd{grid-column:1 / -1}}
+
 /* Table */
 .tbl-tools{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
 .tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px}
@@ -240,13 +257,24 @@ footer a{color:var(--gold)}
       <div class="chart"><canvas id="chOwner" aria-label="Bar top owner"></canvas></div>
     </article>
 
-    <article class="card w8" id="cardWin">
+    <article class="card w12" id="cardWin">
       <div class="card-h"><h2>Win Rate per Tahun</h2><p>Complete ÷ (Complete + Project Lost)</p></div>
       <div class="chart"><canvas id="chWin" aria-label="Bar win rate per tahun"></canvas></div>
     </article>
-    <article class="card w4" id="cardLog">
-      <div class="card-h"><h2>Perubahan Terbaru</h2><p>Terdeteksi sejak halaman dibuka</p></div>
-      <div class="log" id="log"><div class="empty">Belum ada perubahan. Dashboard mengecek spreadsheet otomatis setiap 2 menit.</div></div>
+    <article class="card w12" id="cardLog">
+      <div class="tbl-tools">
+        <div class="card-h"><h2>Riwayat Perubahan</h2></div>
+        <div class="count" id="logCount">Memuat riwayat…</div>
+      </div>
+      <div class="logbar">
+        <div class="f"><label for="lgKind">Jenis</label><select id="lgKind">
+          <option value="">Semua perubahan</option><option value="added">Proyek baru</option><option value="status">Status berubah</option>
+          <option value="edited">Data diubah</option><option value="removed">Proyek dihapus</option></select></div>
+        <div class="f"><label for="lgQ">Cari di riwayat</label><input id="lgQ" type="search" placeholder="Project ID atau nama proyek…"></div>
+      </div>
+      <div class="hist" id="hist"></div>
+      <div class="tbl-tools"><span class="hint">Riwayat dicatat permanen oleh pencatat otomatis yang mengecek spreadsheet sekitar tiap 5 menit. Semua pengunjung melihat riwayat yang sama.</span>
+        <button class="btn ghost" id="lgMore" type="button">Tampilkan lebih banyak</button></div>
     </article>
 
     <article class="card w12" id="cardTable">
@@ -387,6 +415,7 @@ async function load(manual){
     render();
   }
   setLive(err);
+  await loadHistory();
   $("#btnRefresh").classList.remove("spin");
   loading=false;
   if(manual && mode==="live") toast("<b>Data terbaru dimuat.</b> "+fmt(ALL.length)+" proyek.");
@@ -423,13 +452,58 @@ function diff(recs){
   for(const id of prevMap.keys()) if(!next.has(id)) items.push("Proyek <b>"+esc(id)+"</b> dihapus");
   if(!items.length) return;
   window.__flash = changed;
-  const log=$("#log"); log.querySelector(".empty")?.remove();
-  const tm=new Date().toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit"});
-  items.slice(0,50).reverse().forEach(h=>{ const d=document.createElement("div"); d.className="it"; d.innerHTML="<time>"+tm+"</time><span>"+h+"</span>"; log.prepend(d); });
   toast("<b>Spreadsheet berubah.</b> "+items.length+" perubahan terdeteksi dan dashboard sudah diperbarui.");
 }
 function esc(s){ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 let tt; function toast(h){ const t=$("#toast"); t.innerHTML=h; t.classList.add("show"); clearTimeout(tt); tt=setTimeout(()=>t.classList.remove("show"),5000); }
+
+/* ---------- permanent history ---------- */
+const LOG_URL = "data/changelog.json";
+let HIST=null, histShown=60;
+const KIND={init:{l:"Mulai dicatat",c:"var(--gold)"},added:{l:"Proyek baru",c:"var(--good)"},status:{l:"Status berubah",c:"var(--info)"},
+  edited:{l:"Data diubah",c:"var(--gold)"},removed:{l:"Proyek dihapus",c:"var(--bad)"}};
+const FLBL={pic:"PIC",client:"Client",owner:"Owner",year:"Tahun",name:"Nama proyek",site:"Site",type:"Tipe",remarks:"Remarks",status:"Status"};
+const stl = s => SMAP[s]?.label || s || "–";
+async function loadHistory(){
+  try{
+    const r=await fetch(LOG_URL+"?_="+Date.now(),{cache:"no-store"});
+    if(!r.ok) throw new Error(r.status);
+    const j=await r.json(); if(!Array.isArray(j)) throw new Error("format");
+    HIST=j;
+  }catch(e){ if(HIST===null) HIST=false; }
+  renderHistory();
+}
+function renderHistory(){
+  const box=$("#hist"), cnt=$("#logCount"), more=$("#lgMore");
+  if(HIST===false){ box.innerHTML='<div class="hempty">Riwayat permanen hanya tersedia di website GitHub (ptmodis09.github.io). Di sini belum bisa dibaca.</div>'; cnt.textContent=""; more.style.display="none"; return; }
+  if(!HIST) return;
+  const all=HIST.filter(e=>e.kind!=="init");
+  const k=$("#lgKind").value, q=$("#lgQ").value.trim().toLowerCase();
+  const list=all.filter(e=>(!k||e.kind===k)&&(!q||((e.id||"")+" "+(e.name||"")).toLowerCase().includes(q))).reverse();
+  const init=HIST.find(e=>e.kind==="init");
+  const since= init ? " sejak "+new Date(init.ts).toLocaleDateString("id-ID",{day:"numeric",month:"long",year:"numeric",timeZone:"Asia/Jakarta"}) : "";
+  cnt.innerHTML="<b>"+fmt(all.length)+"</b> perubahan tercatat"+since;
+  if(!list.length){ box.innerHTML='<div class="hempty">'+(all.length?"Tidak ada riwayat yang cocok dengan pencarian ini.":"Belum ada perubahan sejak pencatatan dimulai. Setiap perubahan di spreadsheet akan muncul di sini dan tersimpan permanen.")+'</div>'; more.style.display="none"; return; }
+  const shown=list.slice(0,histShown); const days=new Map();
+  for(const e of shown){ const d=new Date(e.ts).toLocaleDateString("id-ID",{weekday:"long",day:"numeric",month:"long",year:"numeric",timeZone:"Asia/Jakarta"}); if(!days.has(d)) days.set(d,[]); days.get(d).push(e); }
+  let h="";
+  for(const [d,evs] of days){
+    h+='<div class="hday"><h3>'+esc(d)+'</h3>';
+    for(const e of evs){
+      const K=KIND[e.kind]||{l:e.kind,c:"var(--gold)"};
+      const tm=new Date(e.ts).toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit",timeZone:"Asia/Jakarta"});
+      let body='<span class="pid">'+esc(e.id)+'</span><span class="nm">'+esc(e.name||"")+'</span>';
+      if(e.kind==="added") body+='<div class="chg"><span>Status: <b>'+esc(stl(e.status))+'</b></span></div>';
+      if(e.kind==="removed") body+='<div class="chg"><span>Status terakhir: <b>'+esc(stl(e.status))+'</b></span></div>';
+      if(e.changes) body+='<div class="chg">'+e.changes.map(c=>'<span>'+esc(FLBL[c.field]||c.field)+': <s>'+esc(c.field==="status"?stl(c.from):(c.from||"–"))+'</s> → <b>'+esc(c.field==="status"?stl(c.to):(c.to||"–"))+'</b></span>').join("")+'</div>';
+      h+='<div class="hev" style="--k:'+K.c+'"><time>'+tm+'</time><span class="kd">'+K.l+'</span><div class="bd">'+body+'</div></div>';
+    }
+    h+='</div>';
+  }
+  const top=box.scrollTop; box.innerHTML=h; box.scrollTop=top;
+  more.style.display= list.length>histShown ? "" : "none";
+  more.textContent="Tampilkan lebih banyak ("+fmt(list.length-histShown)+" lagi)";
+}
 
 /* ---------- filters ---------- */
 const FDEF = [["fYear","year","Semua tahun"],["fPic","pic","Semua PIC"],["fClient","client","Semua client"],["fOwner","owner","Semua owner"],["fType","type","Semua tipe"],["fStatus","status","Semua status"]];
@@ -507,7 +581,7 @@ const endLabel={id:"endLabel",afterDatasetsDraw(ch,_,o){ if(!o||!o.labels) retur
 Chart.register(centerText,endLabel);
 
 function upsert(id,cfg){
-  if(charts[id]){ const ch=charts[id]; ch.data=cfg.data; ch.options=cfg.options; ch.update(); return ch; }
+  if(charts[id]){ const ch=charts[id]; ch.data=cfg.data; Object.assign(ch.options.plugins, cfg.options.plugins||{}); if(cfg.options.scales) ch.options.scales=cfg.options.scales; ch.update(); return ch; }
   charts[id]=new Chart(document.getElementById(id),cfg); return charts[id];
 }
 function donutCfg(labels,data,colors,center,onPick){
@@ -621,6 +695,9 @@ $("#btnRefresh").onclick=()=>load(true);
 $("#pageSize").onchange=e=>{pageSize=+e.target.value;page=1;renderTable();};
 document.querySelectorAll("thead th").forEach(th=>th.onclick=()=>{const k=th.dataset.k; if(sortK===k) sortDir*=-1; else {sortK=k;sortDir=1;} renderTable();});
 $("#srcLink").href=SHEET_URL;
+$("#lgKind").onchange=()=>{histShown=60;renderHistory();};
+let lq; $("#lgQ").addEventListener("input",()=>{clearTimeout(lq);lq=setTimeout(()=>{histShown=60;renderHistory();},200);});
+$("#lgMore").onclick=()=>{histShown+=60;renderHistory();};
 load(false);
 setInterval(()=>{ if(!document.hidden) load(false); }, REFRESH_MS);
 document.addEventListener("visibilitychange",()=>{ if(!document.hidden && mode==="live") load(false); });
